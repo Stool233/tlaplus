@@ -1,0 +1,113 @@
+name: Issue 1395 Formatter Before-Fix Validation
+
+on:
+  push:
+    branches:
+      - ci/issue-1395-formatter-before-fix-validation
+
+jobs:
+  formatter-validation:
+    name: Formatter baseline validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Compile formatter sources and focused tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLASS_DIR=/tmp/issue-1395-formatter-classes
+          SOURCE_LIST=/tmp/issue-1395-formatter-sources.txt
+          LIB_CP=$(find tlatools/org.lamport.tlatools/lib -name '*.jar' | tr '\n' ':')
+
+          rm -rf "$CLASS_DIR"
+          mkdir -p "$CLASS_DIR"
+
+          find tlatools/org.lamport.tlatools/src/formatter -name '*.java' > "$SOURCE_LIST"
+          printf '%s\n' \
+            tlatools/org.lamport.tlatools/test/formatter/Utils.java \
+            tlatools/org.lamport.tlatools/test/formatter/InfixConjAlignmentTest.java \
+            tlatools/org.lamport.tlatools/test/formatter/AstVerificationTest.java \
+            tlatools/org.lamport.tlatools/test/formatter/constructs/impl/OperatorConstructTest.java \
+            tlatools/org.lamport.tlatools/test/formatter/constructs/impl/InfixExprConstructTest.java >> "$SOURCE_LIST"
+
+          javac -encoding UTF-8 \
+            -sourcepath tlatools/org.lamport.tlatools/src:tlatools/org.lamport.tlatools/test \
+            -cp "$LIB_CP" \
+            -d "$CLASS_DIR" @"$SOURCE_LIST"
+
+      - name: Run focused formatter tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLASS_DIR=/tmp/issue-1395-formatter-classes
+          LIB_CP=$(find tlatools/org.lamport.tlatools/lib -name '*.jar' | tr '\n' ':')
+
+          java \
+            -cp "${CLASS_DIR}:tlatools/org.lamport.tlatools/src:tlatools/org.lamport.tlatools/test:${LIB_CP}" \
+            org.junit.runner.JUnitCore \
+            formatter.InfixConjAlignmentTest \
+            formatter.AstVerificationTest \
+            formatter.constructs.impl.OperatorConstructTest \
+            formatter.constructs.impl.InfixExprConstructTest
+
+      - name: Write baseline validation context
+        shell: bash
+        run: |
+          {
+            echo "## Issue 1395 formatter before-fix validation"
+            echo
+            echo "This fork-only branch is based on origin/master before the formatter fix."
+            echo "The full translated #1395 reproduction is expected to fail here."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run full translated issue reproduction
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLASS_DIR=/tmp/issue-1395-formatter-classes
+          LIB_CP=$(find tlatools/org.lamport.tlatools/lib -name '*.jar' | tr '\n' ':')
+          INPUT=ci/issue-1395/InitSyncDocs_trans.tla
+          OUTPUT=ci/issue-1395/InitSyncDocs_trans.formatted.tla
+
+          java \
+            -DTLA-Library=ci/issue-1395 \
+            -cp "${CLASS_DIR}:tlatools/org.lamport.tlatools/src:${LIB_CP}" \
+            formatter.Main \
+            -v ERROR \
+            "$INPUT" \
+            > "$OUTPUT"
+
+          wc -l "$OUTPUT"
+
+      - name: Check patch whitespace
+        shell: bash
+        run: git diff --check origin/master...HEAD
+
+      - name: Write validation summary
+        shell: bash
+        run: |
+          {
+            echo "## Issue 1395 formatter validation"
+            echo
+            echo "- Focused formatter JUnit tests passed."
+            echo "- Full translated #1395 reproduction passed with formatter.Main -v ERROR."
+            echo "- git diff --check passed."
+            echo
+            echo "Formatted output artifact: InitSyncDocs_trans.formatted.tla"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload formatted reproduction output
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-1395-formatted-output
+          path: ci/issue-1395/InitSyncDocs_trans.formatted.tla
