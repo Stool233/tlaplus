@@ -1,0 +1,135 @@
+name: Issue 1392 ARM64 TLC parser repro
+
+on:
+  push:
+    branches:
+      - ci/issue-1392-arm64-tlc-parser-repro
+  workflow_dispatch:
+
+jobs:
+  repro:
+    name: ${{ matrix.label }} / Java ${{ matrix.java }} / ${{ matrix.tla2tools }} / ${{ matrix.case }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        label: [linux-x64, linux-arm64]
+        java: ['21', '25']
+        tla2tools: ['v1.7.4', 'v1.8.0']
+        case: [valid-minimal, issue-body-literal]
+        include:
+          - label: linux-x64
+            runner: ubuntu-24.04
+          - label: linux-arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+
+      - name: Show runtime
+        run: |
+          set -euxo pipefail
+          uname -a
+          uname -m
+          java -XshowSettings:properties -version 2>&1 \
+            | grep -E 'java.version|java.vendor|os.arch|os.name|os.version'
+
+      - name: Download tla2tools.jar
+        run: |
+          set -euxo pipefail
+          curl -fsSL \
+            -o tla2tools.jar \
+            https://github.com/tlaplus/tlaplus/releases/download/${{ matrix.tla2tools }}/tla2tools.jar
+          sha256sum tla2tools.jar
+
+      - name: Run minimal TLC parser repro
+        id: repro
+        run: |
+          set -uo pipefail
+
+          mkdir -p repro
+          case '${{ matrix.case }}' in
+            valid-minimal)
+              expected_success=true
+              cat > repro/ascii.tla <<'TLA'
+          ---- MODULE ascii ----
+          VARIABLE x
+          Init == x = 1
+          Next == x' = x
+          Spec == Init /\ [][Next]_x
+          ====
+          TLA
+
+              cat > repro/ascii.cfg <<'CFG'
+          SPECIFICATION Spec
+          CFG
+              ;;
+            issue-body-literal)
+              expected_success=false
+              cat > repro/ascii.tla <<'TLA'
+          MODULE ascii
+          VARIABLE x
+          Init == x = 1
+          ================
+          TLA
+
+              cat > repro/ascii.cfg <<'CFG'
+          SPECIFICATION Spec
+          CFG
+              ;;
+            *)
+              echo "Unknown case: ${{ matrix.case }}" >&2
+              exit 2
+              ;;
+          esac
+
+          cd repro
+          set +e
+          java -XX:+UseParallelGC -jar ../tla2tools.jar -debug ascii 2>&1 | tee ../tlc-output.txt
+          status=${PIPESTATUS[0]}
+          set -e
+          cd ..
+
+          npe=false
+          if grep -F 'NullPointerException: Cannot invoke "String.length()" because "str" is null' tlc-output.txt; then
+            npe=true
+          fi
+
+          {
+            echo "### Issue #1392 TLC parser repro"
+            echo
+            echo "- Matrix label: \`${{ matrix.label }}\`"
+            echo "- Runner: \`${{ matrix.runner }}\`"
+            echo "- Java: \`${{ matrix.java }}\`"
+            echo "- tla2tools.jar: \`${{ matrix.tla2tools }}\`"
+            echo "- Case: \`${{ matrix.case }}\`"
+            echo "- Expected success: \`$expected_success\`"
+            echo "- TLC exit status: \`$status\`"
+            echo "- Issue NPE detected: \`$npe\`"
+            echo
+            echo "If the issue NPE is detected, this job exits non-zero intentionally so the reproduction is visible in the Actions run."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$npe" = true ]; then
+            exit 1
+          fi
+
+          if [ "$expected_success" = true ]; then
+            exit "$status"
+          fi
+
+          exit 0
+
+      - name: Upload TLC output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tlc-output-${{ matrix.label }}-java${{ matrix.java }}-${{ matrix.tla2tools }}-${{ matrix.case }}
+          path: tlc-output.txt
